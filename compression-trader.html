@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Compression Trader" />
+  <title>Compression Trader</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { background: #0d0d0f; font-family: -apple-system, 'Inter', 'SF Pro Display', sans-serif; color: #fff; overscroll-behavior: none; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    input[type=range] { accent-color: #00e676; }
+    ::-webkit-scrollbar { width: 0; background: transparent; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const STORAGE_KEY = "compression_trader_v1";
+
+const defaultChecklist = [
+  { id: "c1", label: "Compression pattern identified (triangle, wedge, flag, pennant)" },
+  { id: "c2", label: "Higher lows forming during compression" },
+  { id: "c3", label: "Descending or flat resistance clearly defined" },
+  { id: "c4", label: "1D or 4H timeframe confirmed" },
+  { id: "c5", label: "Breakout candle closed above resistance" },
+  { id: "c6", label: "Volume spike confirms breakout (above average)" },
+  { id: "c7", label: "Position size calculated (see calculator)" },
+  { id: "c8", label: "Trailing stop level set before entry" },
+];
+
+const TABS = ["Checklist", "Log Trade", "Journal", "Stats"];
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveData(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+
+function emptyForm() {
+  return {
+    ticker: "", date: new Date().toISOString().slice(0, 10),
+    pattern: "", entry: "", stop: "", target: "",
+    size: "", result: "", pnl: "", notes: "", screenshot: null,
+  };
+}
+
+function App() {
+  const stored = loadData();
+  const [tab, setTab] = useState("Checklist");
+  const [trades, setTrades] = useState(stored.trades || []);
+  const [checked, setChecked] = useState({});
+  const [form, setForm] = useState(emptyForm());
+  const [accountSize, setAccountSize] = useState(stored.accountSize || 10000);
+  const [riskPct, setRiskPct] = useState(stored.riskPct || 1);
+  const [saved, setSaved] = useState(false);
+  const [expandedTrade, setExpandedTrade] = useState(null);
+  const fileInputRef = useRef();
+
+  function persist(newTrades, newAccount, newRisk) {
+    saveData({ trades: newTrades, accountSize: newAccount, riskPct: newRisk });
+  }
+
+  const riskDecimal = riskPct / 100;
+  const entryVal = parseFloat(form.entry) || 0;
+  const stopVal = parseFloat(form.stop) || 0;
+  const riskDollar = accountSize * riskDecimal;
+  const riskPerShare = entryVal > stopVal ? entryVal - stopVal : 0;
+  const suggestedShares = riskPerShare > 0 ? Math.floor(riskDollar / riskPerShare) : 0;
+  const suggestedDollar = suggestedShares * entryVal;
+  const rMultiple = entryVal && stopVal && form.target
+    ? ((parseFloat(form.target) - entryVal) / (entryVal - stopVal)).toFixed(2)
+    : null;
+
+  function handleCheck(id) {
+    setChecked(p => ({ ...p, [id]: !p[id] }));
+  }
+
+  function checkScore() {
+    return defaultChecklist.filter(c => checked[c.id]).length;
+  }
+
+  function handleScreenshot(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setForm(p => ({ ...p, screenshot: ev.target.result }));
+    reader.readAsDataURL(file);
+  }
+
+  function saveTrade() {
+    if (!form.ticker || !form.entry) return;
+    const t = { ...form, id: Date.now(), checklistScore: checkScore(), suggestedShares, riskPct };
+    const next = [t, ...trades];
+    setTrades(next);
+    persist(next, accountSize, riskPct);
+    setForm(emptyForm());
+    setChecked({});
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+    setTab("Journal");
+  }
+
+  function deleteTrade(id) {
+    const next = trades.filter(t => t.id !== id);
+    setTrades(next);
+    persist(next, accountSize, riskPct);
+  }
+
+  const wins = trades.filter(t => parseFloat(t.pnl) > 0);
+  const losses = trades.filter(t => parseFloat(t.pnl) < 0);
+  const totalPnl = trades.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0);
+  const winRate = trades.length ? Math.round((wins.length / trades.length) * 100) : 0;
+  const avgWin = wins.length ? (wins.reduce((s, t) => s + parseFloat(t.pnl), 0) / wins.length).toFixed(2) : 0;
+  const avgLoss = losses.length ? (losses.reduce((s, t) => s + parseFloat(t.pnl), 0) / losses.length).toFixed(2) : 0;
+
+  return (
+    <div style={s.root}>
+      {/* Header */}
+      <div style={s.header}>
+        <div style={s.headerInner}>
+          <span style={s.logo}>⬡</span>
+          <div>
+            <div style={s.title}>COMPRESSION TRADER</div>
+            <div style={s.subtitle}>Your personal trading system</div>
+          </div>
+        </div>
+        <input
+          style={s.accountInput} type="number" value={accountSize}
+          onChange={e => { const v = parseFloat(e.target.value) || 0; setAccountSize(v); persist(trades, v, riskPct); }}
+          placeholder="Account $"
+        />
+      </div>
+
+      {/* Tabs */}
+      <div style={s.tabRow}>
+        {TABS.map(t => (
+          <button key={t} style={{ ...s.tab, ...(tab === t ? s.tabActive : {}) }} onClick={() => setTab(t)}>{t}</button>
+        ))}
+      </div>
+
+      <div style={s.body}>
+
+        {/* ── CHECKLIST ── */}
+        {tab === "Checklist" && (
+          <div>
+            <div style={s.sectionLabel}>PRE-TRADE CHECKLIST</div>
+            <div style={s.scoreBar}>
+              <div style={s.scoreText}>{checkScore()} / {defaultChecklist.length} criteria met</div>
+              <div style={s.scoreTrack}>
+                <div style={{
+                  ...s.scoreFill,
+                  width: `${(checkScore() / defaultChecklist.length) * 100}%`,
+                  background: checkScore() >= 6 ? "#00e676" : checkScore() >= 4 ? "#ffb300" : "#f44336",
+                }} />
+              </div>
+            </div>
+            {checkScore() < 6
+              ? <div style={s.warning}>⚠ Do not enter until at least 6/8 criteria are met — especially volume + breakout close.</div>
+              : <div style={s.good}>✓ Setup looks valid. Proceed with discipline.</div>
+            }
+            <div style={s.checkList}>
+              {defaultChecklist.map(c => (
+                <div key={c.id} style={{
+                  ...s.checkItem,
+                  background: checked[c.id] ? "rgba(0,230,118,0.08)" : "rgba(255,255,255,0.03)",
+                  borderColor: checked[c.id] ? "#00e676" : "rgba(255,255,255,0.1)",
+                }} onClick={() => handleCheck(c.id)}>
+                  <div style={{
+                    ...s.checkbox,
+                    background: checked[c.id] ? "#00e676" : "transparent",
+                    borderColor: checked[c.id] ? "#00e676" : "#555",
+                  }}>
+                    {checked[c.id] && <span style={{ color: "#000", fontSize: 12 }}>✓</span>}
+                  </div>
+                  <span style={{ ...s.checkLabel, opacity: checked[c.id] ? 1 : 0.6 }}>{c.label}</span>
+                </div>
+              ))}
+            </div>
+            <button style={s.btnSecondary} onClick={() => setChecked({})}>Reset Checklist</button>
+          </div>
+        )}
+
+        {/* ── LOG TRADE ── */}
+        {tab === "Log Trade" && (
+          <div>
+            <div style={s.sectionLabel}>LOG A TRADE</div>
+
+            <div style={s.calcBox}>
+              <div style={s.calcTitle}>RISK & POSITION SIZE</div>
+              <div style={s.sliderRow}>
+                <span style={s.sliderLabel}>Risk %</span>
+                <input
+                  type="range" min="0.25" max="5" step="0.25" value={riskPct}
+                  style={{ flex: 1, accentColor: "#00e676", cursor: "pointer" }}
+                  onChange={e => { const v = parseFloat(e.target.value); setRiskPct(v); persist(trades, accountSize, v); }}
+                />
+                <span style={s.sliderVal}>{riskPct}%</span>
+              </div>
+              <div style={s.calcGrid}>
+                <div style={s.calcStat}>
+                  <div style={s.calcVal}>${riskDollar.toFixed(0)}</div>
+                  <div style={s.calcKey}>$ at Risk</div>
+                </div>
+                <div style={s.calcStat}>
+                  <div style={s.calcVal}>{suggestedShares || "—"}</div>
+                  <div style={s.calcKey}>Shares</div>
+                </div>
+                <div style={s.calcStat}>
+                  <div style={s.calcVal}>${suggestedDollar ? suggestedDollar.toFixed(0) : "—"}</div>
+                  <div style={s.calcKey}>Position $</div>
+                </div>
+                <div style={s.calcStat}>
+                  <div style={{ ...s.calcVal, color: rMultiple >= 2 ? "#00e676" : rMultiple ? "#ffb300" : "#fff" }}>
+                    {rMultiple ? `${rMultiple}R` : "—"}
+                  </div>
+                  <div style={s.calcKey}>R:R</div>
+                </div>
+              </div>
+              <div style={s.calcHint}>Enter entry, stop & target below to calculate.</div>
+            </div>
+
+            <div style={s.formGrid}>
+              {[
+                ["Ticker", "ticker", "text", "e.g. HOOD"],
+                ["Date", "date", "date", ""],
+                ["Pattern", "pattern", "text", "e.g. Descending Triangle"],
+                ["Entry Price", "entry", "number", "0.00"],
+                ["Stop Price", "stop", "number", "0.00"],
+                ["Target Price", "target", "number", "0.00"],
+                ["Shares Taken", "size", "number", "0"],
+                ["Result", "result", "text", "Win / Loss / Open"],
+                ["P&L ($)", "pnl", "number", "e.g. 250 or -120"],
+              ].map(([label, key, type, ph]) => (
+                <div key={key} style={s.formField}>
+                  <label style={s.label}>{label}</label>
+                  <input style={s.input} type={type} placeholder={ph} value={form[key]}
+                    onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} />
+                </div>
+              ))}
+            </div>
+
+            <div style={s.formField}>
+              <label style={s.label}>Notes / Observations</label>
+              <textarea style={{ ...s.input, height: 80, resize: "vertical" }}
+                placeholder="What did you see? What did you learn?"
+                value={form.notes}
+                onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+
+            <div style={s.formField}>
+              <label style={s.label}>CHART SCREENSHOT</label>
+              <div style={s.uploadZone} onClick={() => fileInputRef.current.click()}>
+                {form.screenshot
+                  ? <img src={form.screenshot} alt="chart" style={s.previewImg} />
+                  : <div style={s.uploadPrompt}>
+                      <div style={{ fontSize: 28, marginBottom: 6 }}>📷</div>
+                      <div style={{ fontSize: 12, color: "#555" }}>Tap to attach chart screenshot</div>
+                    </div>
+                }
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleScreenshot} />
+              {form.screenshot && (
+                <button style={{ ...s.btnSecondary, marginTop: 8, fontSize: 11 }}
+                  onClick={() => setForm(p => ({ ...p, screenshot: null }))}>
+                  Remove screenshot
+                </button>
+              )}
+            </div>
+
+            <div style={{ ...s.formField, marginBottom: 4 }}>
+              <label style={s.label}>Checklist score at entry: {checkScore()}/{defaultChecklist.length}</label>
+              <div style={{ ...s.calcHint, marginTop: 4 }}>Complete the Checklist tab before logging for accurate score.</div>
+            </div>
+
+            <button style={s.btnPrimary} onClick={saveTrade}>{saved ? "✓ Saved!" : "Save Trade"}</button>
+          </div>
+        )}
+
+        {/* ── JOURNAL ── */}
+        {tab === "Journal" && (
+          <div>
+            <div style={s.sectionLabel}>TRADE JOURNAL — {trades.length} trades</div>
+            {trades.length === 0 && <div style={s.empty}>No trades logged yet. Use "Log Trade" to start.</div>}
+            {trades.map(t => (
+              <div key={t.id} style={s.tradeCard}>
+                <div style={s.tradeHeader} onClick={() => setExpandedTrade(expandedTrade === t.id ? null : t.id)}>
+                  <div>
+                    <div style={s.tradeTicker}>{t.ticker}</div>
+                    <div style={s.tradeMeta}>{t.date} · {t.pattern}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ ...s.tradePnl, color: parseFloat(t.pnl) >= 0 ? "#00e676" : "#f44336" }}>
+                      {parseFloat(t.pnl) >= 0 ? "+" : ""}{t.pnl ? `$${t.pnl}` : t.result || "—"}
+                    </div>
+                    <div style={s.tradeMeta}>✓ {t.checklistScore}/{defaultChecklist.length} · {t.riskPct || 1}% risk</div>
+                  </div>
+                </div>
+
+                {expandedTrade === t.id && (
+                  <div style={s.expandedBody}>
+                    <div style={s.tradeRow}>
+                      <span style={s.tradeMeta}>Entry ${t.entry}</span>
+                      <span style={s.tradeMeta}>Stop ${t.stop}</span>
+                      <span style={s.tradeMeta}>Target ${t.target}</span>
+                    </div>
+                    <div style={s.tradeRow}>
+                      <span style={s.tradeMeta}>{t.suggestedShares} suggested shares</span>
+                    </div>
+                    {t.notes && <div style={s.tradeNotes}>{t.notes}</div>}
+                    {t.screenshot && (
+                      <img src={t.screenshot} alt="chart" style={{ ...s.previewImg, marginTop: 12, borderRadius: 8 }} />
+                    )}
+                    <button style={s.deleteBtn} onClick={() => deleteTrade(t.id)}>Delete trade</button>
+                  </div>
+                )}
+
+                {expandedTrade !== t.id && (
+                  <div style={{ ...s.tradeMeta, marginTop: 6, color: "#333" }}>Tap to expand ↓</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── STATS ── */}
+        {tab === "Stats" && (
+          <div>
+            <div style={s.sectionLabel}>PERFORMANCE STATS</div>
+            {trades.length === 0 && <div style={s.empty}>Log trades to see your stats.</div>}
+            {trades.length > 0 && (
+              <>
+                <div style={s.statsGrid}>
+                  {[
+                    ["Total Trades", trades.length, null],
+                    ["Win Rate", `${winRate}%`, winRate >= 50 ? "#00e676" : "#f44336"],
+                    ["Total P&L", `$${totalPnl.toFixed(2)}`, totalPnl >= 0 ? "#00e676" : "#f44336"],
+                    ["Avg Win", `$${avgWin}`, "#00e676"],
+                    ["Avg Loss", `$${avgLoss}`, "#f44336"],
+                    ["Wins", wins.length, "#00e676"],
+                    ["Losses", losses.length, "#f44336"],
+                    ["Expectancy", trades.length ? `$${(totalPnl / trades.length).toFixed(2)}` : "—",
+                      totalPnl / trades.length >= 0 ? "#00e676" : "#f44336"],
+                  ].map(([k, v, color]) => (
+                    <div key={k} style={s.statCard}>
+                      <div style={{ ...s.statVal, color: color || "#fff" }}>{v}</div>
+                      <div style={s.statKey}>{k}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={s.sectionLabel}>PATTERN BREAKDOWN</div>
+                {Object.entries(
+                  trades.reduce((acc, t) => {
+                    const p = t.pattern || "Unknown";
+                    if (!acc[p]) acc[p] = { count: 0, pnl: 0 };
+                    acc[p].count++;
+                    acc[p].pnl += parseFloat(t.pnl) || 0;
+                    return acc;
+                  }, {})
+                ).map(([pattern, data]) => (
+                  <div key={pattern} style={s.patternRow}>
+                    <span style={s.patternName}>{pattern}</span>
+                    <span style={s.tradeMeta}>{data.count} trades</span>
+                    <span style={{ ...s.tradePnl, fontSize: 14, color: data.pnl >= 0 ? "#00e676" : "#f44336" }}>
+                      {data.pnl >= 0 ? "+" : ""}${data.pnl.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+
+                <div style={s.sectionLabel}>CHECKLIST DISCIPLINE</div>
+                <div style={s.tradeCard}>
+                  <div style={s.tradeMeta}>
+                    Avg checklist score:{" "}
+                    <strong style={{ color: "#fff" }}>
+                      {(trades.reduce((sum, t) => sum + (t.checklistScore || 0), 0) / trades.length).toFixed(1)}/{defaultChecklist.length}
+                    </strong>
+                  </div>
+                  <div style={{ ...s.tradeMeta, marginTop: 8 }}>
+                    Trades with 6+ criteria: <strong style={{ color: "#00e676" }}>{trades.filter(t => (t.checklistScore || 0) >= 6).length}</strong>
+                  </div>
+                  <div style={{ ...s.tradeMeta, marginTop: 8 }}>
+                    Trades below 6 criteria: <strong style={{ color: "#f44336" }}>{trades.filter(t => (t.checklistScore || 0) < 6).length}</strong>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const s = {
+  root: { background: "#0d0d0f", minHeight: "100vh", fontFamily: "-apple-system, 'Inter', sans-serif", color: "#fff", maxWidth: 480, margin: "0 auto" },
+  header: { background: "linear-gradient(135deg, #0d0d0f 0%, #161620 100%)", borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "20px 16px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  headerInner: { display: "flex", alignItems: "center", gap: 12 },
+  logo: { fontSize: 28, color: "#00e676" },
+  title: { fontSize: 16, fontWeight: 700, letterSpacing: 2, color: "#fff" },
+  subtitle: { fontSize: 11, color: "#555", letterSpacing: 1 },
+  accountInput: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fff", padding: "6px 10px", fontSize: 13, width: 100, textAlign: "right" },
+  tabRow: { display: "flex", borderBottom: "1px solid rgba(255,255,255,0.07)", background: "#0d0d0f", position: "sticky", top: 0, zIndex: 10 },
+  tab: { flex: 1, padding: "12px 4px", background: "none", border: "none", color: "#555", fontSize: 12, fontWeight: 600, letterSpacing: 0.5, cursor: "pointer", borderBottom: "2px solid transparent" },
+  tabActive: { color: "#00e676", borderBottom: "2px solid #00e676" },
+  body: { padding: 16, paddingBottom: 60 },
+  sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#444", marginBottom: 14, marginTop: 8 },
+  scoreBar: { marginBottom: 10 },
+  scoreText: { fontSize: 13, color: "#aaa", marginBottom: 6 },
+  scoreTrack: { height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden" },
+  scoreFill: { height: "100%", borderRadius: 4 },
+  warning: { background: "rgba(244,67,54,0.1)", border: "1px solid rgba(244,67,54,0.3)", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#ef9a9a", marginBottom: 14 },
+  good: { background: "rgba(0,230,118,0.08)", border: "1px solid rgba(0,230,118,0.2)", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#00e676", marginBottom: 14 },
+  checkList: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 },
+  checkItem: { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, border: "1px solid", cursor: "pointer" },
+  checkbox: { width: 20, height: 20, borderRadius: 5, border: "2px solid", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  checkLabel: { fontSize: 13, lineHeight: 1.4 },
+  calcBox: { background: "linear-gradient(135deg, rgba(0,230,118,0.05), rgba(0,230,118,0.02))", border: "1px solid rgba(0,230,118,0.15)", borderRadius: 12, padding: 16, marginBottom: 20 },
+  calcTitle: { fontSize: 10, letterSpacing: 2, color: "#00e676", marginBottom: 12, fontWeight: 700 },
+  sliderRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16 },
+  sliderLabel: { fontSize: 11, color: "#555", letterSpacing: 1, minWidth: 40 },
+  sliderVal: { fontSize: 14, fontWeight: 700, color: "#00e676", minWidth: 36, textAlign: "right" },
+  calcGrid: { display: "flex", gap: 8, justifyContent: "space-around" },
+  calcStat: { textAlign: "center" },
+  calcVal: { fontSize: 20, fontWeight: 700, color: "#fff" },
+  calcKey: { fontSize: 10, color: "#555", letterSpacing: 1, marginTop: 2 },
+  calcHint: { fontSize: 11, color: "#444", marginTop: 10 },
+  formGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 },
+  formField: { display: "flex", flexDirection: "column", gap: 5, marginBottom: 12 },
+  label: { fontSize: 10, letterSpacing: 1.5, color: "#555", fontWeight: 600 },
+  input: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#fff", padding: "10px 12px", fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" },
+  uploadZone: { border: "1px dashed rgba(255,255,255,0.15)", borderRadius: 10, minHeight: 100, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden", background: "rgba(255,255,255,0.02)" },
+  uploadPrompt: { textAlign: "center", padding: 20 },
+  previewImg: { width: "100%", display: "block", objectFit: "cover" },
+  btnPrimary: { width: "100%", padding: "14px", background: "#00e676", color: "#000", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, letterSpacing: 1, cursor: "pointer", marginTop: 8 },
+  btnSecondary: { padding: "10px 20px", background: "transparent", color: "#555", border: "1px solid #333", borderRadius: 8, fontSize: 12, cursor: "pointer" },
+  tradeCard: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: 14, marginBottom: 12 },
+  tradeHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" },
+  tradeTicker: { fontSize: 18, fontWeight: 700, letterSpacing: 1 },
+  tradePnl: { fontSize: 16, fontWeight: 700 },
+  expandedBody: { marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" },
+  tradeRow: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 },
+  tradeMeta: { fontSize: 11, color: "#555" },
+  tradeNotes: { fontSize: 12, color: "#777", marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.05)", lineHeight: 1.5 },
+  deleteBtn: { marginTop: 12, padding: "6px 12px", background: "transparent", border: "1px solid rgba(244,67,54,0.3)", borderRadius: 6, color: "#f44336", fontSize: 11, cursor: "pointer" },
+  statsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 },
+  statCard: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 12px", textAlign: "center" },
+  statVal: { fontSize: 22, fontWeight: 700 },
+  statKey: { fontSize: 10, color: "#444", letterSpacing: 1, marginTop: 4 },
+  patternRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "rgba(255,255,255,0.03)", borderRadius: 8, marginBottom: 8 },
+  patternName: { fontSize: 13, color: "#ccc", flex: 1 },
+  empty: { color: "#444", fontSize: 13, textAlign: "center", paddingTop: 40 },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
